@@ -355,6 +355,15 @@ class WindowMonitor:
         
         while self.monitoring:
             try:
+                # Check for window resize and update region if needed
+                if self.window_capture and self.window_capture.window_region:
+                    resize_detected = self.window_capture.check_and_update_region()
+                    if resize_detected:
+                        log_monitor_status("Window resize detected - region updated", "info")
+                        # Reset previous image to force OCR on next stable frame
+                        self.previous_image = None
+                        self.waiting_for_change = False
+                
                 # Capture current window
                 current_image = self.capture_current_window()
                 

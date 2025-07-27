@@ -237,6 +237,8 @@ class WindowCapture:
         self.debug = debug
         self.target_window = None
         self.window_region = None
+        self.original_window_size = None  # (width, height) when region was set
+        self.region_relative = None  # Region as relative coordinates (0.0-1.0)
         
     def select_window(self) -> bool:
         """
@@ -334,5 +336,98 @@ class WindowCapture:
     
     def set_region(self, region: tuple[int, int, int, int]):
         """Set a specific region within the window to capture."""
-        self.window_region = region
-        print(f"Set capture region: {region}")
+        if not self.target_window:
+            raise ValueError("No window selected. Call select_window() first.")
+        
+        # Capture current window to get its dimensions
+        try:
+            current_image = capture_window_by_name(self.target_window["name"])
+            window_height, window_width = current_image.shape[:2]
+            
+            # Store original window size and calculate relative coordinates
+            self.original_window_size = (window_width, window_height)
+            
+            x, y, width, height = region
+            # Convert absolute coordinates to relative (0.0-1.0)
+            self.region_relative = (
+                x / window_width,
+                y / window_height,
+                width / window_width,
+                height / window_height
+            )
+            
+            self.window_region = region
+            print(f"Set capture region: {region} (relative: {[f'{r:.3f}' for r in self.region_relative]})")
+            
+        except ValueError as e:
+            raise ValueError(f"Could not set region - failed to capture window: {e}")
+    
+    def get_current_window_size(self) -> tuple[int, int]:
+        """Get the current size of the target window."""
+        if not self.target_window:
+            raise ValueError("No window selected.")
+        
+        try:
+            image = capture_window_by_name(self.target_window["name"])
+            window_height, window_width = image.shape[:2]
+            return (window_width, window_height)
+        except ValueError:
+            # Try partial name match
+            try:
+                image = capture_window_by_partial_name(self.target_window["name"])
+                window_height, window_width = image.shape[:2]
+                return (window_width, window_height)
+            except ValueError:
+                raise ValueError(f"Could not get window size: {self.target_window['name']}")
+    
+    def recalculate_region_for_new_size(self, new_width: int, new_height: int) -> tuple[int, int, int, int]:
+        """Recalculate region coordinates for a new window size."""
+        if not self.region_relative:
+            raise ValueError("No relative region coordinates stored.")
+        
+        rel_x, rel_y, rel_width, rel_height = self.region_relative
+        
+        # Convert relative coordinates back to absolute
+        new_x = int(rel_x * new_width)
+        new_y = int(rel_y * new_height)
+        new_region_width = int(rel_width * new_width)
+        new_region_height = int(rel_height * new_height)
+        
+        # Ensure region stays within bounds
+        new_x = max(0, min(new_x, new_width - 1))
+        new_y = max(0, min(new_y, new_height - 1))
+        new_region_width = min(new_region_width, new_width - new_x)
+        new_region_height = min(new_region_height, new_height - new_y)
+        
+        return (new_x, new_y, new_region_width, new_region_height)
+    
+    def check_and_update_region(self) -> bool:
+        """Check if window was resized and update region accordingly.
+        
+        Returns:
+            True if region was updated due to resize, False otherwise
+        """
+        if not self.window_region or not self.original_window_size:
+            return False
+        
+        try:
+            current_width, current_height = self.get_current_window_size()
+            original_width, original_height = self.original_window_size
+            
+            # Check if window size changed
+            if current_width != original_width or current_height != original_height:
+                # Window was resized - recalculate region
+                new_region = self.recalculate_region_for_new_size(current_width, current_height)
+                
+                print(f"Window resized from {original_width}x{original_height} to {current_width}x{current_height}")
+                print(f"Updating region from {self.window_region} to {new_region}")
+                
+                self.window_region = new_region
+                self.original_window_size = (current_width, current_height)
+                
+                return True
+                
+        except ValueError as e:
+            print(f"Warning: Could not check window size: {e}")
+        
+        return False
