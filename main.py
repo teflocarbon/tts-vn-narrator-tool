@@ -20,6 +20,9 @@ from difflib import SequenceMatcher
 from window_capture import WindowCapture
 from ocrmac import ocrmac
 
+# TTS integration
+from tts_engine import initialize_tts, speak_text, stop_speaking, is_speaking
+
 
 class WindowMonitor:
     def __init__(self, check_interval: float = 1.0, debug: bool = False):
@@ -44,6 +47,10 @@ class WindowMonitor:
         self.last_detected_text = ""
         self.waiting_for_change = False
         self.text_similarity_threshold = 0.8  # 80% similarity threshold
+        
+        # TTS integration
+        self.tts_enabled = True
+        self.tts_engine = None
         
         print("OCR Engine: Apple macOS OCR (via ocrmac)")
         if debug:
@@ -291,33 +298,50 @@ class WindowMonitor:
     
     def on_text_detected(self, text: str):
         """
-        Handle detected text. This is where TTS integration will be added later.
+        Handle detected text with TTS integration.
         Only outputs text if it's significantly different from the last detected text.
         
         Args:
             text: The detected text
         """
-        if not text or not text.strip():
+        if not text.strip():
             return
         
-        # Check similarity with last detected text
+        # Calculate similarity with last detected text
         similarity = self.calculate_text_similarity(text, self.last_detected_text)
         
         if similarity < self.text_similarity_threshold:
-            print(f"\n{'='*50}")
-            print("NEW TEXT DETECTED:")
-            print(f"{'='*50}")
+            # Text is significantly different - output it
+            print(f"\n{'='*60}")
+            print("DETECTED TEXT:")
+            print(f"{'='*60}")
             print(text)
-            print(f"{'='*50}")
+            print(f"{'='*60}\n")
+            
+            # TTS integration - speak the detected text
+            if self.tts_enabled:
+                try:
+                    # Initialize TTS engine if not already done
+                    if self.tts_engine is None:
+                        print("Initializing TTS engine...")
+                        self.tts_engine = initialize_tts()
+                    
+                    # Stop any currently playing audio before speaking new text
+                    stop_speaking()
+                    
+                    # Speak the new text
+                    print("Speaking text...")
+                    speak_text(text)
+                    
+                except Exception as e:
+                    print(f"TTS Error: {e}")
+                    print("Continuing without TTS...")
             
             # Update last detected text
             self.last_detected_text = text
-            
-            # TODO: Uncomment the line below when ready to add TTS
-            # tts_engine.speak(text)
         else:
             if self.debug:
-                print(f"Text similarity too high ({similarity:.2f}), skipping output")
+                print(f"Text similarity too high ({similarity:.2f}) - skipping output")
     
     def monitor_window(self):
         """
