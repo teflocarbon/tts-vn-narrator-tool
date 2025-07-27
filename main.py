@@ -6,7 +6,6 @@ This application captures a selected window on macOS, monitors for changes,
 and uses Apple's macOS OCR OCR to extract text when the content stops scrolling.
 """
 
-import cv2
 import numpy as np
 import time
 import threading
@@ -75,7 +74,7 @@ class WindowMonitor:
     
     def select_window_region(self) -> Optional[tuple[int, int, int, int]]:
         """
-        Allow user to select a region within the captured window.
+        Allow user to select a region within the captured window using Tkinter.
         
         Returns:
             Tuple of (x, y, width, height) relative to the window or None if cancelled
@@ -87,102 +86,168 @@ class WindowMonitor:
         print("\nSelect the region within the window to monitor...")
         print("Instructions:")
         print("- Click and drag to select the region")
-        print("- Press ENTER or SPACE to confirm")
-        print("- Press ESC or 'q' to cancel")
-        print("- Press 'f' to use the full window (no region)")
+        print("- Click 'Confirm Selection' to confirm")
+        print("- Click 'Cancel' to cancel")
+        print("- Click 'Use Full Window' to use the entire window")
         
         try:
+            import tkinter as tk
+            from tkinter import messagebox
+            from PIL import Image, ImageTk
+            
             # Capture the current window
             window_img = self.window_capture.capture_current_window()
             
-            # Convert to BGR for OpenCV display
-            if len(window_img.shape) == 3 and window_img.shape[2] == 3:
-                display_img = cv2.cvtColor(window_img, cv2.COLOR_RGB2BGR)
+            # Convert numpy array to PIL Image
+            if len(window_img.shape) == 3:
+                pil_img = Image.fromarray(window_img)
             else:
-                display_img = window_img.copy()
+                pil_img = Image.fromarray(window_img, mode='L')
             
             # Scale down for display if window is too large
-            window_height, window_width = display_img.shape[:2]
+            original_width, original_height = pil_img.size
             max_display_width = 1200
             max_display_height = 800
             
             scale_factor = 1.0
-            if window_width > max_display_width or window_height > max_display_height:
-                scale_x = max_display_width / window_width
-                scale_y = max_display_height / window_height
+            if original_width > max_display_width or original_height > max_display_height:
+                scale_x = max_display_width / original_width
+                scale_y = max_display_height / original_height
                 scale_factor = min(scale_x, scale_y)
                 
-                display_width = int(window_width * scale_factor)
-                display_height = int(window_height * scale_factor)
-                display_img = cv2.resize(display_img, (display_width, display_height))
+                display_width = int(original_width * scale_factor)
+                display_height = int(original_height * scale_factor)
+                display_img = pil_img.resize((display_width, display_height), Image.Resampling.LANCZOS)
+            else:
+                display_img = pil_img
+            
+            # Create Tkinter window
+            root = tk.Tk()
+            root.title("Select Window Region")
+            root.resizable(False, False)
             
             # Variables for selection
+            selection_result = {'region': None, 'cancelled': False}
+            start_x = start_y = end_x = end_y = 0
             selecting = False
-            start_point = None
-            end_point = None
-            current_img = display_img.copy()
+            selection_rect = None
             
-            def mouse_callback(event, x, y, flags, param):
-                nonlocal selecting, start_point, end_point, current_img
-                
-                if event == cv2.EVENT_LBUTTONDOWN:
-                    selecting = True
-                    start_point = (x, y)
-                    end_point = (x, y)
+            # Create canvas
+            canvas = tk.Canvas(root, width=display_img.width, height=display_img.height)
+            canvas.pack()
+            
+            # Convert PIL image to PhotoImage and display
+            photo = ImageTk.PhotoImage(display_img)
+            canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+            
+            # Selection rectangle drawing
+            def start_selection(event):
+                nonlocal start_x, start_y, selecting, selection_rect
+                start_x, start_y = event.x, event.y
+                selecting = True
+                if selection_rect:
+                    canvas.delete(selection_rect)
+                selection_rect = None
+            
+            def update_selection(event):
+                nonlocal end_x, end_y, selection_rect
+                if selecting:
+                    end_x, end_y = event.x, event.y
+                    if selection_rect:
+                        canvas.delete(selection_rect)
                     
-                elif event == cv2.EVENT_MOUSEMOVE and selecting:
-                    end_point = (x, y)
-                    current_img = display_img.copy()
-                    if start_point and end_point:
-                        cv2.rectangle(current_img, start_point, end_point, (0, 255, 0), 2)
-                        # Add selection info
-                        width = abs(end_point[0] - start_point[0])
-                        height = abs(end_point[1] - start_point[1])
-                        cv2.putText(current_img, f"Selection: {width}x{height}", 
-                                  (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        
-                elif event == cv2.EVENT_LBUTTONUP:
-                    selecting = False
+                    # Draw selection rectangle
+                    selection_rect = canvas.create_rectangle(
+                        start_x, start_y, end_x, end_y,
+                        outline='red', width=2
+                    )
+                    
+                    # Update info text
+                    width = abs(end_x - start_x)
+                    height = abs(end_y - start_y)
+                    actual_width = int(width / scale_factor)
+                    actual_height = int(height / scale_factor)
+                    info_text.set(f"Selection: {actual_width}x{actual_height} pixels")
             
-            cv2.namedWindow("Select Window Region", cv2.WINDOW_NORMAL)
-            cv2.setMouseCallback("Select Window Region", mouse_callback)
+            def end_selection(event):
+                nonlocal selecting
+                selecting = False
             
-            while True:
-                cv2.imshow("Select Window Region", current_img)
-                key = cv2.waitKey(1) & 0xFF
-                
-                if key == ord('q') or key == 27:  # ESC
-                    cv2.destroyAllWindows()
-                    return None
-                elif key == ord('f'):  # Full window
-                    cv2.destroyAllWindows()
-                    return None  # No region means full window
-                elif key == 13 or key == 32:  # ENTER or SPACE
-                    if start_point and end_point:
-                        # Convert display coordinates back to actual window coordinates
-                        actual_x1 = int(min(start_point[0], end_point[0]) / scale_factor)
-                        actual_y1 = int(min(start_point[1], end_point[1]) / scale_factor)
-                        actual_x2 = int(max(start_point[0], end_point[0]) / scale_factor)
-                        actual_y2 = int(max(start_point[1], end_point[1]) / scale_factor)
-                        
-                        actual_width = actual_x2 - actual_x1
-                        actual_height = actual_y2 - actual_y1
-                        
-                        if actual_width > 10 and actual_height > 10:  # Minimum size check
-                            cv2.destroyAllWindows()
-                            return (actual_x1, actual_y1, actual_width, actual_height)
-                        else:
-                            print("Selection too small. Please select a larger region.")
+            # Bind mouse events
+            canvas.bind("<Button-1>", start_selection)
+            canvas.bind("<B1-Motion>", update_selection)
+            canvas.bind("<ButtonRelease-1>", end_selection)
+            
+            # Info label
+            info_text = tk.StringVar()
+            info_text.set("Click and drag to select a region")
+            info_label = tk.Label(root, textvariable=info_text, font=('Arial', 10))
+            info_label.pack(pady=5)
+            
+            # Button frame
+            button_frame = tk.Frame(root)
+            button_frame.pack(pady=10)
+            
+            def confirm_selection():
+                if selection_rect:
+                    # Convert display coordinates back to actual window coordinates
+                    actual_x1 = int(min(start_x, end_x) / scale_factor)
+                    actual_y1 = int(min(start_y, end_y) / scale_factor)
+                    actual_x2 = int(max(start_x, end_x) / scale_factor)
+                    actual_y2 = int(max(start_y, end_y) / scale_factor)
+                    
+                    actual_width = actual_x2 - actual_x1
+                    actual_height = actual_y2 - actual_y1
+                    
+                    if actual_width > 10 and actual_height > 10:  # Minimum size check
+                        selection_result['region'] = (actual_x1, actual_y1, actual_width, actual_height)
+                        root.quit()
                     else:
-                        print("Please make a selection first.")
-                        
+                        messagebox.showwarning("Selection Too Small", "Please select a larger region (minimum 10x10 pixels).")
+                else:
+                    messagebox.showwarning("No Selection", "Please make a selection first.")
+            
+            def cancel_selection():
+                selection_result['cancelled'] = True
+                root.quit()
+            
+            def use_full_window():
+                selection_result['region'] = None  # None means full window
+                root.quit()
+            
+            # Buttons
+            tk.Button(button_frame, text="Confirm Selection", command=confirm_selection, 
+                     bg='green', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
+            tk.Button(button_frame, text="Use Full Window", command=use_full_window, 
+                     bg='blue', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
+            tk.Button(button_frame, text="Cancel", command=cancel_selection, 
+                     bg='red', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
+            
+            # Center the window
+            root.update_idletasks()
+            x = (root.winfo_screenwidth() // 2) - (root.winfo_width() // 2)
+            y = (root.winfo_screenheight() // 2) - (root.winfo_height() // 2)
+            root.geometry(f"+{x}+{y}")
+            
+            # Handle window close
+            def on_closing():
+                selection_result['cancelled'] = True
+                root.quit()
+            
+            root.protocol("WM_DELETE_WINDOW", on_closing)
+            
+            # Run the GUI
+            root.mainloop()
+            root.destroy()
+            
+            if selection_result['cancelled']:
+                return None
+            else:
+                return selection_result['region']
+                
         except Exception as e:
             print(f"Error during window region selection: {e}")
-            cv2.destroyAllWindows()
             return None
-        
-        cv2.destroyAllWindows()
-        return None
     
     def capture_current_window(self) -> np.ndarray:
         """
@@ -195,7 +260,7 @@ class WindowMonitor:
     
     def images_are_different(self, img1: np.ndarray, img2: np.ndarray, threshold: float = 0.01) -> bool:
         """
-        Compare two images to determine if they are different.
+        Compare two images to determine if they are different using NumPy.
         
         Args:
             img1: First image
@@ -211,17 +276,19 @@ class WindowMonitor:
         if img1.shape != img2.shape:
             return True
         
-        # Calculate absolute difference
-        diff = cv2.absdiff(img1, img2)
+        # Calculate absolute difference using NumPy
+        diff = np.abs(img1.astype(np.float32) - img2.astype(np.float32))
         
-        # Convert to grayscale if needed
+        # Convert to grayscale if needed (weighted average for RGB)
         if len(diff.shape) == 3:
-            diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+            # Use standard RGB to grayscale conversion weights
+            diff = np.dot(diff[...,:3], [0.299, 0.587, 0.114])
         
-        # Calculate the percentage of different pixels
-        non_zero_count = cv2.countNonZero(diff)
+        # Calculate the percentage of different pixels (threshold for "different" pixel)
+        pixel_threshold = 30  # Pixels with difference > 30 are considered different
+        different_pixels = np.sum(diff > pixel_threshold)
         total_pixels = diff.shape[0] * diff.shape[1]
-        difference_ratio = non_zero_count / total_pixels
+        difference_ratio = different_pixels / total_pixels
         
         # Log the image difference with rich formatting
         is_different = difference_ratio > threshold
@@ -303,7 +370,12 @@ class WindowMonitor:
                 if self.debug and hasattr(self, 'debug_counter'):
                     if self.debug_counter % 10 == 0:  # Save every 10th frame
                         debug_path = f"debug_captures/frame_{self.debug_counter:04d}.png"
-                        cv2.imwrite(debug_path, current_image)
+                        from PIL import Image
+                        if len(current_image.shape) == 3:
+                            pil_img = Image.fromarray(current_image)
+                        else:
+                            pil_img = Image.fromarray(current_image, mode='L')
+                        pil_img.save(debug_path)
                         self.logger.debug(f"Saved frame to {debug_path}")
                     self.debug_counter += 1
                 elif self.debug:
