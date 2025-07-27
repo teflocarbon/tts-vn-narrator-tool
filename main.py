@@ -242,7 +242,6 @@ class WindowMonitor:
             
             # Use ocrmac with Live Text - this returns a list directly
             annotations = ocrmac.OCR(temp_path).recognize()
-            print(annotations)
             
             # Clean up temporary file
             os.unlink(temp_path)
