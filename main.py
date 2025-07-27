@@ -237,9 +237,12 @@ class WindowMonitor:
                 
                 # Save the image
                 cv2.imwrite(temp_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
+                
+            print(f"Image saved to {temp_path}")
             
             # Use ocrmac with Live Text - this returns a list directly
-            annotations = ocrmac.livetext_from_image(temp_path)
+            annotations = ocrmac.OCR(temp_path).recognize()
+            print(annotations)
             
             # Clean up temporary file
             os.unlink(temp_path)
