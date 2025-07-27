@@ -3,7 +3,7 @@
 TTS Visual Novel Narrator Tool - macOS Only
 
 This application captures a selected window on macOS, monitors for changes,
-and uses Apple's Live Text OCR to extract text when the content stops scrolling.
+and uses Apple's macOS OCR OCR to extract text when the content stops scrolling.
 """
 
 import cv2
@@ -45,7 +45,7 @@ class WindowMonitor:
         self.waiting_for_change = False
         self.text_similarity_threshold = 0.8  # 80% similarity threshold
         
-        print("OCR Engine: Apple Live Text (via ocrmac)")
+        print("OCR Engine: Apple macOS OCR (via ocrmac)")
         if debug:
             print("DEBUG MODE ENABLED - Images will be saved to debug_captures/")
             os.makedirs("debug_captures", exist_ok=True)
@@ -214,9 +214,9 @@ class WindowMonitor:
         
         return difference_ratio > threshold
     
-    def extract_text_with_live_text(self, image: np.ndarray) -> str:
+    def extract_text_with_macos_ocr(self, image: np.ndarray) -> str:
         """
-        Extract text from an image using Apple's Live Text OCR.
+        Extract text from an image using Apple's macOS OCR OCR.
         
         Args:
             image: Image to extract text from
@@ -240,7 +240,7 @@ class WindowMonitor:
                 
             print(f"Image saved to {temp_path}")
             
-            # Use ocrmac with Live Text - this returns a list directly
+            # Use ocrmac with macOS OCR - this returns a list directly
             annotations = ocrmac.OCR(temp_path).recognize()
             
             # Clean up temporary file
@@ -259,14 +259,14 @@ class WindowMonitor:
             extracted_text = ' '.join(text_parts).strip()
             
             if self.debug:
-                print(f"Live Text extracted {len(annotations)} annotations")
+                print(f"macOS OCR extracted {len(annotations)} annotations")
                 print(f"Extracted text: '{extracted_text[:100]}{'...' if len(extracted_text) > 100 else ''}'")
             
             return extracted_text
             
         except Exception as e:
             if self.debug:
-                print(f"Error during Live Text OCR: {e}")
+                print(f"Error during macOS OCR OCR: {e}")
             return ""
     
     def calculate_text_similarity(self, text1: str, text2: str) -> float:
@@ -344,7 +344,7 @@ class WindowMonitor:
                     if self.images_are_different(current_image, self.previous_image):
                         if self.waiting_for_change:
                             # We were waiting for change and got it - run OCR to see if text changed
-                            text = self.extract_text_with_live_text(current_image)
+                            text = self.extract_text_with_macos_ocr(current_image)
                             if text:
                                 self.on_text_detected(text)
                                 # Now wait for the next change
@@ -360,7 +360,7 @@ class WindowMonitor:
                         # No change detected
                         if not self.waiting_for_change:
                             # Content has stabilized - run OCR
-                            text = self.extract_text_with_live_text(current_image)
+                            text = self.extract_text_with_macos_ocr(current_image)
                             if text:
                                 self.on_text_detected(text)
                                 # Set flag to wait for next change
