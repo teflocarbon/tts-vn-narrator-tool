@@ -64,8 +64,18 @@ class OCRProcessor:
                 if self.debug:
                     self.logger.debug(f"Image saved to {temp_path}")
                 
-                # Run OCR
-                annotations = ocrmac.OCR(temp_path).recognize()
+                # Run OCR with error handling
+                try:
+                    annotations = ocrmac.OCR(temp_path).recognize()
+                except Exception as ocr_error:
+                    log_ocr_status(f"OCR processing failed: {ocr_error}", "error")
+                    return ""
+                
+                # Check if OCR returned valid results
+                if annotations is None:
+                    if self.debug:
+                        log_ocr_status("OCR returned None - no annotations found", "warning")
+                    return ""
                 
                 if self.debug:
                     log_ocr_status(f"Extracted {len(annotations)} annotations", "info")
@@ -73,11 +83,18 @@ class OCRProcessor:
                 # Extract text from annotations
                 # Annotations format: [(text, confidence, [x, y, width, height]), ...]
                 text_parts = []
-                for annotation in annotations:
-                    if len(annotation) >= 1:
-                        text = annotation[0].strip()
-                        if text:
-                            text_parts.append(text)
+                try:
+                    for annotation in annotations:
+                        if annotation is None:
+                            continue
+                        if len(annotation) >= 1 and annotation[0] is not None:
+                            text = str(annotation[0]).strip()
+                            if text:
+                                text_parts.append(text)
+                except (TypeError, IndexError, AttributeError) as parse_error:
+                    log_ocr_status(f"Error parsing annotations: {parse_error}", "error")
+                    if self.debug:
+                        self.logger.debug(f"Problematic annotations: {annotations}")
                 
                 # Clean up temporary file
                 try:
