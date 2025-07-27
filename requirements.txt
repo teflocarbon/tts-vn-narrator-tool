@@ -4,3 +4,4 @@ ocrmac
 pyobjc-framework-Quartz
 pygame
 openai
+rich

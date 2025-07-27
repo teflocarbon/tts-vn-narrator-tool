@@ -10,18 +10,21 @@ import cv2
 import numpy as np
 import time
 import threading
-import tempfile
 import os
 from typing import Optional
 import argparse
-from difflib import SequenceMatcher
 
 # macOS-specific imports
 from window_capture import WindowCapture
-from ocrmac import ocrmac
 
 # TTS integration
 from tts_engine import initialize_tts, speak_text, stop_speaking, is_speaking
+
+# OCR processing
+from ocr_processor import OCRProcessor
+
+# Logging
+from logger import setup_logger, log_detected_text, log_monitor_status, log_image_difference
 
 
 class WindowMonitor:
@@ -43,18 +46,22 @@ class WindowMonitor:
         # Window capture setup
         self.window_capture = WindowCapture(debug=debug)
         
-        # Text detection state management
-        self.last_detected_text = ""
+        # State management
         self.waiting_for_change = False
-        self.text_similarity_threshold = 0.8  # 80% similarity threshold
+        self.last_image_hash = None
+        
+        # OCR processor
+        self.ocr_processor = OCRProcessor(debug=debug, similarity_threshold=0.8)
         
         # TTS integration
         self.tts_enabled = True
         self.tts_engine = None
         
-        print("OCR Engine: Apple macOS OCR (via ocrmac)")
+        # Setup logger
+        self.logger = setup_logger('monitor', 'DEBUG' if debug else 'INFO')
+        
         if debug:
-            print("DEBUG MODE ENABLED - Images will be saved to debug_captures/")
+            log_monitor_status("Debug mode enabled - Images will be saved to debug_captures/", "info")
             os.makedirs("debug_captures", exist_ok=True)
     
     def select_window(self) -> bool:
@@ -216,189 +223,127 @@ class WindowMonitor:
         total_pixels = diff.shape[0] * diff.shape[1]
         difference_ratio = non_zero_count / total_pixels
         
-        if self.debug:
-            print(f"Image difference ratio: {difference_ratio:.4f} (threshold: {threshold})")
+        # Log the image difference with rich formatting
+        is_different = difference_ratio > threshold
+        log_image_difference(difference_ratio, threshold, is_different)
         
-        return difference_ratio > threshold
+        return is_different
     
-    def extract_text_with_macos_ocr(self, image: np.ndarray) -> str:
+    def get_image_hash(self, image: np.ndarray) -> str:
         """
-        Extract text from an image using Apple's macOS OCR OCR.
+        Generate a simple hash for an image to detect changes.
         
         Args:
-            image: Image to extract text from
+            image: Image to hash
             
         Returns:
-            Extracted text as string
+            Hash string
         """
-        try:
-            # Save image to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                temp_path = temp_file.name
-                
-                # Convert BGR to RGB if needed
-                if len(image.shape) == 3 and image.shape[2] == 3:
-                    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                else:
-                    image_rgb = image
-                
-                # Save the image
-                cv2.imwrite(temp_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
-                
-            print(f"Image saved to {temp_path}")
-            
-            # Use ocrmac with macOS OCR - this returns a list directly
-            annotations = ocrmac.OCR(temp_path).recognize()
-            
-            # Clean up temporary file
-            os.unlink(temp_path)
-            
-            # Extract text from annotations
-            # Annotations format: [(text, confidence, [x, y, width, height]), ...]
-            text_parts = []
-            for annotation in annotations:
-                if len(annotation) >= 1:
-                    text = annotation[0].strip()
-                    if text:
-                        text_parts.append(text)
-            
-            # Join all text parts with spaces
-            extracted_text = ' '.join(text_parts).strip()
-            
-            if self.debug:
-                print(f"macOS OCR extracted {len(annotations)} annotations")
-                print(f"Extracted text: '{extracted_text[:100]}{'...' if len(extracted_text) > 100 else ''}'")
-            
-            return extracted_text
-            
-        except Exception as e:
-            if self.debug:
-                print(f"Error during macOS OCR OCR: {e}")
+        if image is None:
             return ""
-    
-    def calculate_text_similarity(self, text1: str, text2: str) -> float:
-        """
-        Calculate similarity between two text strings.
         
-        Args:
-            text1: First text string
-            text2: Second text string
-            
-        Returns:
-            Similarity ratio between 0.0 and 1.0
-        """
-        if not text1 and not text2:
-            return 1.0
-        if not text1 or not text2:
-            return 0.0
-        
-        # Use SequenceMatcher for similarity calculation
-        matcher = SequenceMatcher(None, text1.lower(), text2.lower())
-        return matcher.ratio()
+        # Simple hash based on image mean and shape
+        return f"{image.shape}_{np.mean(image):.6f}"
     
     def on_text_detected(self, text: str):
         """
         Handle detected text with TTS integration.
-        Only outputs text if it's significantly different from the last detected text.
+        Uses OCRProcessor to check if text should be processed.
         
         Args:
             text: The detected text
         """
-        if not text.strip():
-            return
+        # Use OCR processor to determine if text should be processed
+        should_process, processed_text = self.ocr_processor.process_text_if_different(text)
         
-        # Calculate similarity with last detected text
-        similarity = self.calculate_text_similarity(text, self.last_detected_text)
-        
-        if similarity < self.text_similarity_threshold:
-            # Text is significantly different - output it
-            print(f"\n{'='*60}")
-            print("DETECTED TEXT:")
-            print(f"{'='*60}")
-            print(text)
-            print(f"{'='*60}\n")
+        if should_process:
+            # Display the detected text with rich formatting
+            log_detected_text(processed_text)
             
             # TTS integration - speak the detected text
             if self.tts_enabled:
                 try:
                     # Initialize TTS engine if not already done
                     if self.tts_engine is None:
-                        print("Initializing TTS engine...")
+                        log_monitor_status("Initializing TTS engine...", "info")
                         self.tts_engine = initialize_tts()
                     
                     # Stop any currently playing audio before speaking new text
                     stop_speaking()
                     
                     # Speak the new text
-                    print("Speaking text...")
-                    speak_text(text)
+                    speak_text(processed_text)
                     
                 except Exception as e:
-                    print(f"TTS Error: {e}")
-                    print("Continuing without TTS...")
-            
-            # Update last detected text
-            self.last_detected_text = text
-        else:
-            if self.debug:
-                print(f"Text similarity too high ({similarity:.2f}) - skipping output")
+                    log_monitor_status(f"TTS Error: {e}", "error")
+                    log_monitor_status("Continuing without TTS...", "warning")
     
     def monitor_window(self):
         """
         Monitor the selected window for changes and extract text when stable.
-        Implements smart state management to avoid repeated OCR of the same text.
+        Optimized to only run OCR when the image actually changes.
         """
-        print("Starting window monitoring...")
-        print("Press Ctrl+C to stop monitoring")
+        log_monitor_status("Starting window monitoring...", "info")
+        log_monitor_status("Press Ctrl+C to stop monitoring", "info")
         
         while self.monitoring:
             try:
                 # Capture current window
                 current_image = self.capture_current_window()
                 
-                if self.debug and self.debug_counter % 10 == 0:  # Save every 10th frame in debug mode
-                    debug_path = f"debug_captures/frame_{self.debug_counter:04d}.png"
-                    cv2.imwrite(debug_path, current_image)
-                    print(f"Debug: Saved frame to {debug_path}")
+                if current_image is None:
+                    log_monitor_status("Failed to capture window", "error")
+                    time.sleep(self.check_interval)
+                    continue
                 
-                self.debug_counter += 1
+                # Generate hash for current image
+                current_hash = self.get_image_hash(current_image)
+                
+                # Debug: Save frames periodically
+                if self.debug and hasattr(self, 'debug_counter'):
+                    if self.debug_counter % 10 == 0:  # Save every 10th frame
+                        debug_path = f"debug_captures/frame_{self.debug_counter:04d}.png"
+                        cv2.imwrite(debug_path, current_image)
+                        self.logger.debug(f"Saved frame to {debug_path}")
+                    self.debug_counter += 1
+                elif self.debug:
+                    self.debug_counter = 0
                 
                 # Compare with previous image
                 if self.previous_image is not None:
+                    # Check if image has changed
                     if self.images_are_different(current_image, self.previous_image):
+                        # Image changed - reset waiting state and wait for stability
                         if self.waiting_for_change:
+                            log_monitor_status("Change detected after stability - checking for new text", "info")
                             # We were waiting for change and got it - run OCR to see if text changed
-                            text = self.extract_text_with_macos_ocr(current_image)
+                            text = self.ocr_processor.extract_text_with_macos_ocr(current_image)
                             if text:
                                 self.on_text_detected(text)
-                                # Now wait for the next change
-                                self.waiting_for_change = True
-                            else:
-                                # No text found, keep waiting for changes
-                                self.waiting_for_change = False
                         else:
-                            print("Change detected - waiting for stability...")
-                            # Reset waiting state since we're seeing changes
-                            self.waiting_for_change = False
+                            log_monitor_status("Change detected - waiting for stability...", "info")
+                        
+                        # Reset waiting state since we're seeing changes
+                        self.waiting_for_change = False
                     else:
-                        # No change detected
+                        # No change detected - image is stable
                         if not self.waiting_for_change:
-                            # Content has stabilized - run OCR
-                            text = self.extract_text_with_macos_ocr(current_image)
+                            # Content has stabilized and we haven't processed it yet - run OCR
+                            log_monitor_status("Content stabilized - running OCR", "info")
+                            text = self.ocr_processor.extract_text_with_macos_ocr(current_image)
                             if text:
                                 self.on_text_detected(text)
-                                # Set flag to wait for next change
-                                self.waiting_for_change = True
-                        else:
-                            print("Change detected - waiting for stability...")
-                            # Reset waiting state since we're seeing changes
-                            self.waiting_for_change = False
+                            # Set flag to wait for next change
+                            self.waiting_for_change = True
+                        # If waiting_for_change is True, we've already processed this stable image
+                        # so we don't need to do anything until the image changes
                 else:
                     # First image capture
-                    print("Initial capture - waiting for next frame...")
+                    log_monitor_status("Initial capture - waiting for next frame...", "info")
                 
-                # Update previous image
+                # Update previous image and hash
                 self.previous_image = current_image.copy()
+                self.last_image_hash = current_hash
                 
                 # Wait for the specified interval
                 time.sleep(self.check_interval)
@@ -412,23 +357,29 @@ class WindowMonitor:
     def start_monitoring(self):
         """Start monitoring in a separate thread."""
         if self.monitoring:
-            print("Already monitoring!")
+            log_monitor_status("Already monitoring!", "warning")
             return
             
         # Check if we have a window selected
         if not self.window_capture or not self.window_capture.target_window:
-            print("No window selected!")
+            log_monitor_status("No window selected!", "error")
             return
             
         self.monitoring = True
         self.monitor_thread = threading.Thread(target=self.monitor_window, daemon=True)
         self.monitor_thread.start()
+        log_monitor_status("Monitoring started in background thread", "success")
     
     def stop_monitoring(self):
         """Stop monitoring."""
+        if not self.monitoring:
+            return
+            
+        log_monitor_status("Stopping monitoring...", "info")
         self.monitoring = False
         if self.monitor_thread:
             self.monitor_thread.join()
+        log_monitor_status("Monitoring stopped", "success")
 
 
 def main():
@@ -455,24 +406,24 @@ def main():
     
     # Select window
     if not monitor.select_window():
-        print("No window selected. Exiting.")
+        log_monitor_status("No window selected. Exiting.", "error")
         return
     
-    print("Window selected successfully.")
+    log_monitor_status("Window selected successfully.", "success")
     
     # Optionally select a region within the window
-    print("\nDo you want to select a specific region within the window?")
+    log_monitor_status("\nDo you want to select a specific region within the window?", "info")
     choice = input("Press 'y' for region selection, or any other key to use the full window: ").strip().lower()
     
     if choice == 'y':
         window_region = monitor.select_window_region()
         if window_region:
             monitor.window_capture.set_region(window_region)
-            print(f"Selected window region: {window_region}")
+            log_monitor_status(f"Selected window region: {window_region}", "success")
         else:
-            print("Using full window (no region selected).")
+            log_monitor_status("Using full window (no region selected).", "info")
     else:
-        print("Using full window.")
+        log_monitor_status("Using full window.", "info")
     
     try:
         # Start monitoring
@@ -483,9 +434,9 @@ def main():
             time.sleep(0.1)
             
     except KeyboardInterrupt:
-        print("\nStopping monitoring...")
+        log_monitor_status("\nStopping monitoring...", "warning")
         monitor.stop_monitoring()
-        print("Goodbye!")
+        log_monitor_status("Goodbye!", "info")
 
 
 if __name__ == "__main__":

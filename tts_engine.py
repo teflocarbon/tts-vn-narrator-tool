@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from openai import OpenAI
 import pygame
+from logger import setup_logger, log_tts_status
 
 
 class TTSEngine:
@@ -39,6 +40,9 @@ class TTSEngine:
         # Create temp directory for audio files
         self.temp_dir = Path(tempfile.gettempdir()) / "tts_narrator"
         self.temp_dir.mkdir(exist_ok=True)
+        
+        # Setup logger
+        self.logger = setup_logger('tts')
     
     def speak(self, text):
         """
@@ -72,7 +76,7 @@ class TTSEngine:
             timestamp = int(time.time() * 1000)
             audio_file = self.temp_dir / f"speech_{timestamp}.wav"
             
-            print(f"Generating TTS for: {text[:50]}...")
+            log_tts_status(f"Generating TTS for: {text[:50]}...", "info")
             
             # Generate speech using OpenAI API
             with self.client.audio.speech.with_streaming_response.create(
@@ -84,7 +88,7 @@ class TTSEngine:
             
             # Play the audio file
             if audio_file.exists():
-                print(f"Playing audio: {audio_file}")
+                log_tts_status(f"Playing audio: {audio_file.name}", "success")
                 pygame.mixer.music.load(str(audio_file))
                 pygame.mixer.music.play()
                 
@@ -101,7 +105,7 @@ class TTSEngine:
                     pass  # File might be in use, ignore
             
         except Exception as e:
-            print(f"TTS Error: {e}")
+            log_tts_status(f"TTS Error: {e}", "error")
         finally:
             self.is_speaking = False
     
