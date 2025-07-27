@@ -1,4 +1,9 @@
 opencv-python
 pytesseract
+mss
 numpy
+Pillow
+transformers
+torch
+torchvision
 Pillow

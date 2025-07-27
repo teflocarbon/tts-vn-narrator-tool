@@ -9,6 +9,7 @@ and uses OCR to extract text when the content stops scrolling.
 import cv2
 import numpy as np
 import pytesseract
+import mss
 import time
 import threading
 from typing import Tuple, Optional
@@ -25,21 +26,24 @@ except ImportError:
 
 
 class ScreenRegionMonitor:
-    def __init__(self, check_interval: float = 1.0, debug: bool = False):
+    def __init__(self, check_interval: float = 1.0, debug: bool = False, capture_method: str = "auto"):
         """
         Initialize the screen region monitor.
         
         Args:
             check_interval: Time in seconds between snapshots (default: 1.0)
             debug: Enable debug mode with image saving and previews
+            capture_method: Screen capture method ('mss', 'pil', 'auto')
         """
         self.check_interval = check_interval
         self.monitoring = False
         self.selected_region = None
         self.previous_image = None
         self.monitor_thread = None
+        self.sct = mss.mss()
         self.debug = debug
         self.debug_counter = 0
+        self.capture_method = capture_method
         
         # Text detection state management
         self.last_detected_text = ""
@@ -160,7 +164,7 @@ class ScreenRegionMonitor:
     
     def capture_region(self) -> np.ndarray:
         """
-        Capture the selected region of the screen using PIL ImageGrab.
+        Capture the selected region of the screen using the configured method.
         
         Returns:
             Numpy array of the captured image
@@ -168,48 +172,88 @@ class ScreenRegionMonitor:
         if not self.selected_region:
             raise ValueError("No region selected")
             
-        if not PIL_AVAILABLE:
-            raise RuntimeError("PIL not available for screen capture")
-            
         x, y, width, height = self.selected_region
         
-        try:
-            # PIL uses (left, top, right, bottom) format
-            bbox = (x, y, x + width, y + height)
-            screenshot = ImageGrab.grab(bbox)
-            
-            # Convert PIL Image to numpy array
-            img = np.array(screenshot)
-            
-            # Convert RGB to BGR for OpenCV compatibility
-            if len(img.shape) == 3 and img.shape[2] == 3:
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-            elif len(img.shape) == 3 and img.shape[2] == 4:
-                img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-            
-            if self.debug:
-                self.debug_counter += 1
-                debug_filename = f"debug_captures/capture_{self.debug_counter:04d}.png"
+        # Try different capture methods
+        img = None
+        method_used = ""
+        
+        if self.capture_method in ["mss", "auto"]:
+            try:
+                img = self._capture_with_mss(x, y, width, height)
+                method_used = "MSS"
+            except Exception as e:
+                if self.debug:
+                    print(f"DEBUG: MSS capture failed: {e}")
+                if self.capture_method == "mss":
+                    raise
+        
+        if img is None and self.capture_method in ["pil", "auto"] and PIL_AVAILABLE:
+            try:
+                img = self._capture_with_pil(x, y, width, height)
+                method_used = "PIL"
+            except Exception as e:
+                if self.debug:
+                    print(f"DEBUG: PIL capture failed: {e}")
+                if self.capture_method == "pil":
+                    raise
+        
+        if img is None:
+            raise RuntimeError("All screen capture methods failed")
+        
+        if self.debug:
+            self.debug_counter += 1
+            debug_filename = f"debug_captures/capture_{self.debug_counter:04d}.png"
+            try:
+                cv2.imwrite(debug_filename, img)
+                print(f"DEBUG: Saved captured image to {debug_filename} (size: {img.shape}) using {method_used}")
+                
+                # Show a preview window (with error handling)
                 try:
-                    cv2.imwrite(debug_filename, img)
-                    print(f"DEBUG: Saved captured image to {debug_filename} (size: {img.shape}) using PIL")
-                    
-                    # Show a preview window (with error handling)
-                    try:
-                        preview = cv2.resize(img, (min(800, img.shape[1]), min(600, img.shape[0])))
-                        cv2.imshow("Debug: Captured Region", preview)
-                        cv2.waitKey(1)  # Non-blocking
-                    except Exception as e:
-                        print(f"DEBUG: Preview window failed: {e}")
+                    preview = cv2.resize(img, (min(800, img.shape[1]), min(600, img.shape[0])))
+                    cv2.imshow("Debug: Captured Region", preview)
+                    cv2.waitKey(1)  # Non-blocking
                 except Exception as e:
-                    print(f"DEBUG: Failed to save debug image: {e}")
-            
-            return img
-            
-        except Exception as e:
-            raise RuntimeError(f"PIL screen capture failed: {e}")
+                    print(f"DEBUG: Preview window failed: {e}")
+            except Exception as e:
+                print(f"DEBUG: Failed to save debug image: {e}")
+        
+        return img
     
-
+    def _capture_with_mss(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        """
+        Capture screen region using MSS library.
+        """
+        monitor = {
+            "top": y,
+            "left": x,
+            "width": width,
+            "height": height
+        }
+        
+        screenshot = self.sct.grab(monitor)
+        img = np.array(screenshot)
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        return img
+    
+    def _capture_with_pil(self, x: int, y: int, width: int, height: int) -> np.ndarray:
+        """
+        Capture screen region using PIL ImageGrab.
+        """
+        # PIL uses (left, top, right, bottom) format
+        bbox = (x, y, x + width, y + height)
+        screenshot = ImageGrab.grab(bbox)
+        
+        # Convert PIL Image to numpy array
+        img = np.array(screenshot)
+        
+        # Convert RGB to BGR for OpenCV compatibility
+        if len(img.shape) == 3 and img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        elif len(img.shape) == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        
+        return img
     
     def images_are_different(self, img1: np.ndarray, img2: np.ndarray, threshold: float = 0.01) -> bool:
         """
@@ -471,6 +515,12 @@ def main():
         help="Check interval in seconds (default: 1.0)"
     )
     parser.add_argument(
+        "--capture-method",
+        choices=["mss", "pil", "auto"],
+        default="auto",
+        help="Screen capture method: mss, pil, or auto (default: auto)"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug mode with image saving and detailed output"
@@ -481,7 +531,8 @@ def main():
     # Create monitor instance
     monitor = ScreenRegionMonitor(
         check_interval=args.interval, 
-        debug=args.debug
+        debug=args.debug,
+        capture_method=args.capture_method
     )
     
     # Select region
