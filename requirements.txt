@@ -1,9 +1,4 @@
 opencv-python
-pytesseract
-mss
 numpy
-Pillow
-transformers
-torch
-torchvision
-Pillow
+ocrmac
+pyobjc-framework-Quartz

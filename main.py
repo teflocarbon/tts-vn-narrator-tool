@@ -1,259 +1,183 @@
 #!/usr/bin/env python3
 """
-TTS Visual Novel Narrator Tool
+TTS Visual Novel Narrator Tool - macOS Only
 
-This application captures a selected region of the screen, monitors for changes,
-and uses OCR to extract text when the content stops scrolling.
+This application captures a selected window on macOS, monitors for changes,
+and uses Apple's Live Text OCR to extract text when the content stops scrolling.
 """
 
 import cv2
 import numpy as np
-import pytesseract
-import mss
 import time
 import threading
-from typing import Tuple, Optional
+import tempfile
+import os
+from typing import Optional
 import argparse
 from difflib import SequenceMatcher
 
-# Screen capture imports
-try:
-    from PIL import Image, ImageGrab
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    print("PIL not available. Install with: pip install Pillow")
+# macOS-specific imports
+from window_capture import WindowCapture
+from ocrmac import ocrmac
 
 
-class ScreenRegionMonitor:
-    def __init__(self, check_interval: float = 1.0, debug: bool = False, capture_method: str = "auto"):
+class WindowMonitor:
+    def __init__(self, check_interval: float = 1.0, debug: bool = False):
         """
-        Initialize the screen region monitor.
+        Initialize the macOS window monitor.
         
         Args:
             check_interval: Time in seconds between snapshots (default: 1.0)
-            debug: Enable debug mode with image saving and previews
-            capture_method: Screen capture method ('mss', 'pil', 'auto')
+            debug: Enable debug mode with image saving and detailed output
         """
         self.check_interval = check_interval
         self.monitoring = False
-        self.selected_region = None
         self.previous_image = None
         self.monitor_thread = None
-        self.sct = mss.mss()
         self.debug = debug
         self.debug_counter = 0
-        self.capture_method = capture_method
+        
+        # Window capture setup
+        self.window_capture = WindowCapture(debug=debug)
         
         # Text detection state management
         self.last_detected_text = ""
         self.waiting_for_change = False
         self.text_similarity_threshold = 0.8  # 80% similarity threshold
         
-        print("OCR Engine: Tesseract (simplified)")
+        print("OCR Engine: Apple Live Text (via ocrmac)")
         if debug:
             print("DEBUG MODE ENABLED - Images will be saved to debug_captures/")
-            import os
             os.makedirs("debug_captures", exist_ok=True)
-        
-    def select_region(self) -> Optional[Tuple[int, int, int, int]]:
+    
+    def select_window(self) -> bool:
         """
-        Allow user to select a region of the screen by clicking and dragging.
-        Uses a more efficient approach with a transparent overlay.
+        Allow user to select a window to monitor.
         
         Returns:
-            Tuple of (x, y, width, height) or None if cancelled
+            True if a window was selected, False otherwise
         """
-        print("Select the region to monitor...")
+        return self.window_capture.select_window()
+    
+    def select_window_region(self) -> Optional[tuple[int, int, int, int]]:
+        """
+        Allow user to select a region within the captured window.
+        
+        Returns:
+            Tuple of (x, y, width, height) relative to the window or None if cancelled
+        """
+        if not self.window_capture or not self.window_capture.target_window:
+            print("No window selected for region selection!")
+            return None
+        
+        print("\nSelect the region within the window to monitor...")
         print("Instructions:")
         print("- Click and drag to select the region")
         print("- Press ENTER or SPACE to confirm")
         print("- Press ESC or 'q' to cancel")
+        print("- Press 'f' to use the full window (no region)")
         
-        # Get screen dimensions
-        monitor = self.sct.monitors[0]
-        screen_width = monitor['width']
-        screen_height = monitor['height']
-        
-        # Create a smaller preview for better performance
-        scale_factor = 0.5  # Scale down for better performance
-        preview_width = int(screen_width * scale_factor)
-        preview_height = int(screen_height * scale_factor)
-        
-        # Capture and resize screenshot
-        screenshot = self.sct.grab(monitor)
-        img = np.array(screenshot)
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        img_resized = cv2.resize(img, (preview_width, preview_height))
-        
-        # Variables for selection
-        selecting = False
-        start_point = None
-        end_point = None
-        current_img = img_resized.copy()
-        
-        def mouse_callback(event, x, y, flags, param):
-            nonlocal selecting, start_point, end_point, current_img
+        try:
+            # Capture the current window
+            window_img = self.window_capture.capture_current_window()
             
-            if event == cv2.EVENT_LBUTTONDOWN:
-                selecting = True
-                start_point = (x, y)
-                end_point = (x, y)
-                
-            elif event == cv2.EVENT_MOUSEMOVE and selecting:
-                end_point = (x, y)
-                # Only redraw when actively selecting
-                current_img = img_resized.copy()
-                if start_point and end_point:
-                    cv2.rectangle(current_img, start_point, end_point, (0, 255, 0), 2)
-                    # Add selection info
-                    width = abs(end_point[0] - start_point[0])
-                    height = abs(end_point[1] - start_point[1])
-                    cv2.putText(current_img, f"Size: {int(width/scale_factor)}x{int(height/scale_factor)}", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                
-            elif event == cv2.EVENT_LBUTTONUP:
-                selecting = False
-                if start_point and end_point:
-                    cv2.rectangle(current_img, start_point, end_point, (0, 255, 0), 2)
-                    width = abs(end_point[0] - start_point[0])
-                    height = abs(end_point[1] - start_point[1])
-                    cv2.putText(current_img, f"Size: {int(width/scale_factor)}x{int(height/scale_factor)}", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    cv2.putText(current_img, "Press SPACE/ENTER to confirm, ESC/Q to cancel", 
-                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        # Create window
-        window_name = "Select Region (Scaled View)"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_name, preview_width, preview_height)
-        cv2.setMouseCallback(window_name, mouse_callback)
-        
-        # Add initial instructions
-        cv2.putText(current_img, "Click and drag to select region", 
-                   (10, preview_height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        while True:
-            cv2.imshow(window_name, current_img)
-            key = cv2.waitKey(30) & 0xFF  # Increased wait time for better performance
+            # Convert to BGR for OpenCV display
+            if len(window_img.shape) == 3 and window_img.shape[2] == 3:
+                display_img = cv2.cvtColor(window_img, cv2.COLOR_RGB2BGR)
+            else:
+                display_img = window_img.copy()
             
-            if key == ord('q') or key == 27:  # ESC key
-                cv2.destroyAllWindows()
-                return None
+            # Scale down for display if window is too large
+            window_height, window_width = display_img.shape[:2]
+            max_display_width = 1200
+            max_display_height = 800
+            
+            scale_factor = 1.0
+            if window_width > max_display_width or window_height > max_display_height:
+                scale_x = max_display_width / window_width
+                scale_y = max_display_height / window_height
+                scale_factor = min(scale_x, scale_y)
                 
-            elif key == ord(' ') or key == 13:  # SPACE or ENTER
-                if start_point and end_point:
+                display_width = int(window_width * scale_factor)
+                display_height = int(window_height * scale_factor)
+                display_img = cv2.resize(display_img, (display_width, display_height))
+            
+            # Variables for selection
+            selecting = False
+            start_point = None
+            end_point = None
+            current_img = display_img.copy()
+            
+            def mouse_callback(event, x, y, flags, param):
+                nonlocal selecting, start_point, end_point, current_img
+                
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    selecting = True
+                    start_point = (x, y)
+                    end_point = (x, y)
+                    
+                elif event == cv2.EVENT_MOUSEMOVE and selecting:
+                    end_point = (x, y)
+                    current_img = display_img.copy()
+                    if start_point and end_point:
+                        cv2.rectangle(current_img, start_point, end_point, (0, 255, 0), 2)
+                        # Add selection info
+                        width = abs(end_point[0] - start_point[0])
+                        height = abs(end_point[1] - start_point[1])
+                        cv2.putText(current_img, f"Selection: {width}x{height}", 
+                                  (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        
+                elif event == cv2.EVENT_LBUTTONUP:
+                    selecting = False
+            
+            cv2.namedWindow("Select Window Region", cv2.WINDOW_NORMAL)
+            cv2.setMouseCallback("Select Window Region", mouse_callback)
+            
+            while True:
+                cv2.imshow("Select Window Region", current_img)
+                key = cv2.waitKey(1) & 0xFF
+                
+                if key == ord('q') or key == 27:  # ESC
                     cv2.destroyAllWindows()
-                    # Calculate region coordinates (scale back to original size)
-                    x1, y1 = start_point
-                    x2, y2 = end_point
-                    x = int(min(x1, x2) / scale_factor)
-                    y = int(min(y1, y2) / scale_factor)
-                    width = int(abs(x2 - x1) / scale_factor)
-                    height = int(abs(y2 - y1) / scale_factor)
-                    
-                    # Ensure minimum size
-                    if width < 50 or height < 50:
-                        print("Selected region too small. Please select a larger area.")
-                        return self.select_region()  # Retry
-                    
-                    return (x, y, width, height)
+                    return None
+                elif key == ord('f'):  # Full window
+                    cv2.destroyAllWindows()
+                    return None  # No region means full window
+                elif key == 13 or key == 32:  # ENTER or SPACE
+                    if start_point and end_point:
+                        # Convert display coordinates back to actual window coordinates
+                        actual_x1 = int(min(start_point[0], end_point[0]) / scale_factor)
+                        actual_y1 = int(min(start_point[1], end_point[1]) / scale_factor)
+                        actual_x2 = int(max(start_point[0], end_point[0]) / scale_factor)
+                        actual_y2 = int(max(start_point[1], end_point[1]) / scale_factor)
+                        
+                        actual_width = actual_x2 - actual_x1
+                        actual_height = actual_y2 - actual_y1
+                        
+                        if actual_width > 10 and actual_height > 10:  # Minimum size check
+                            cv2.destroyAllWindows()
+                            return (actual_x1, actual_y1, actual_width, actual_height)
+                        else:
+                            print("Selection too small. Please select a larger region.")
+                    else:
+                        print("Please make a selection first.")
+                        
+        except Exception as e:
+            print(f"Error during window region selection: {e}")
+            cv2.destroyAllWindows()
+            return None
         
         cv2.destroyAllWindows()
         return None
     
-    def capture_region(self) -> np.ndarray:
+    def capture_current_window(self) -> np.ndarray:
         """
-        Capture the selected region of the screen using the configured method.
+        Capture the currently selected window.
         
         Returns:
-            Numpy array of the captured image
+            Numpy array of the captured window
         """
-        if not self.selected_region:
-            raise ValueError("No region selected")
-            
-        x, y, width, height = self.selected_region
-        
-        # Try different capture methods
-        img = None
-        method_used = ""
-        
-        if self.capture_method in ["mss", "auto"]:
-            try:
-                img = self._capture_with_mss(x, y, width, height)
-                method_used = "MSS"
-            except Exception as e:
-                if self.debug:
-                    print(f"DEBUG: MSS capture failed: {e}")
-                if self.capture_method == "mss":
-                    raise
-        
-        if img is None and self.capture_method in ["pil", "auto"] and PIL_AVAILABLE:
-            try:
-                img = self._capture_with_pil(x, y, width, height)
-                method_used = "PIL"
-            except Exception as e:
-                if self.debug:
-                    print(f"DEBUG: PIL capture failed: {e}")
-                if self.capture_method == "pil":
-                    raise
-        
-        if img is None:
-            raise RuntimeError("All screen capture methods failed")
-        
-        if self.debug:
-            self.debug_counter += 1
-            debug_filename = f"debug_captures/capture_{self.debug_counter:04d}.png"
-            try:
-                cv2.imwrite(debug_filename, img)
-                print(f"DEBUG: Saved captured image to {debug_filename} (size: {img.shape}) using {method_used}")
-                
-                # Show a preview window (with error handling)
-                try:
-                    preview = cv2.resize(img, (min(800, img.shape[1]), min(600, img.shape[0])))
-                    cv2.imshow("Debug: Captured Region", preview)
-                    cv2.waitKey(1)  # Non-blocking
-                except Exception as e:
-                    print(f"DEBUG: Preview window failed: {e}")
-            except Exception as e:
-                print(f"DEBUG: Failed to save debug image: {e}")
-        
-        return img
-    
-    def _capture_with_mss(self, x: int, y: int, width: int, height: int) -> np.ndarray:
-        """
-        Capture screen region using MSS library.
-        """
-        monitor = {
-            "top": y,
-            "left": x,
-            "width": width,
-            "height": height
-        }
-        
-        screenshot = self.sct.grab(monitor)
-        img = np.array(screenshot)
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        return img
-    
-    def _capture_with_pil(self, x: int, y: int, width: int, height: int) -> np.ndarray:
-        """
-        Capture screen region using PIL ImageGrab.
-        """
-        # PIL uses (left, top, right, bottom) format
-        bbox = (x, y, x + width, y + height)
-        screenshot = ImageGrab.grab(bbox)
-        
-        # Convert PIL Image to numpy array
-        img = np.array(screenshot)
-        
-        # Convert RGB to BGR for OpenCV compatibility
-        if len(img.shape) == 3 and img.shape[2] == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        elif len(img.shape) == 3 and img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-        
-        return img
+        return self.window_capture.capture_current_window()
     
     def images_are_different(self, img1: np.ndarray, img2: np.ndarray, threshold: float = 0.01) -> bool:
         """
@@ -267,71 +191,32 @@ class ScreenRegionMonitor:
         Returns:
             True if images are different, False if they are the same
         """
-        try:
-            if img1 is None or img2 is None:
-                return True
-                
-            if img1.shape != img2.shape:
-                if self.debug:
-                    print(f"DEBUG: Image shapes differ: {img1.shape} vs {img2.shape}")
-                return True
-            
-            # Validate image data
-            if img1.size == 0 or img2.size == 0:
-                if self.debug:
-                    print("DEBUG: Empty image detected")
-                return True
-            
-            # Convert to grayscale for comparison (with error handling)
-            try:
-                if len(img1.shape) == 3:
-                    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-                else:
-                    gray1 = img1.copy()
-                    
-                if len(img2.shape) == 3:
-                    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-                else:
-                    gray2 = img2.copy()
-            except Exception as e:
-                if self.debug:
-                    print(f"DEBUG: Color conversion failed: {e}")
-                # Fallback to simple numpy comparison
-                return not np.array_equal(img1, img2)
-            
-            # Calculate the difference (with error handling)
-            try:
-                diff = cv2.absdiff(gray1, gray2)
-            except Exception as e:
-                if self.debug:
-                    print(f"DEBUG: cv2.absdiff failed: {e}")
-                # Fallback to numpy difference
-                diff = np.abs(gray1.astype(np.float32) - gray2.astype(np.float32))
-            
-            # Calculate the percentage of different pixels
-            total_pixels = diff.size
-            if total_pixels == 0:
-                return False
-                
-            different_pixels = np.count_nonzero(diff > 10)  # Small threshold for noise
-            difference_ratio = different_pixels / total_pixels
-            
-            if self.debug:
-                print(f"DEBUG: Image difference ratio: {difference_ratio:.4f} (threshold: {threshold})")
-            
-            return difference_ratio > threshold
-            
-        except Exception as e:
-            if self.debug:
-                print(f"DEBUG: Image comparison failed with exception: {e}")
-            # If comparison fails, assume images are different to be safe
+        if img1 is None or img2 is None:
             return True
+        
+        if img1.shape != img2.shape:
+            return True
+        
+        # Calculate absolute difference
+        diff = cv2.absdiff(img1, img2)
+        
+        # Convert to grayscale if needed
+        if len(diff.shape) == 3:
+            diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate the percentage of different pixels
+        non_zero_count = cv2.countNonZero(diff)
+        total_pixels = diff.shape[0] * diff.shape[1]
+        difference_ratio = non_zero_count / total_pixels
+        
+        if self.debug:
+            print(f"Image difference ratio: {difference_ratio:.4f} (threshold: {threshold})")
+        
+        return difference_ratio > threshold
     
-
-    
-    def extract_text_with_ocr(self, image: np.ndarray) -> str:
+    def extract_text_with_live_text(self, image: np.ndarray) -> str:
         """
-        Extract text from an image using Tesseract OCR with minimal preprocessing.
+        Extract text from an image using Apple's Live Text OCR.
         
         Args:
             image: Image to extract text from
@@ -339,40 +224,48 @@ class ScreenRegionMonitor:
         Returns:
             Extracted text as string
         """
-        height, width = image.shape[:2]
-        print(f"Processing image: {width}x{height} with Tesseract (simplified)")
-        
         try:
-            # Convert to grayscale if needed
-            if len(image.shape) == 3:
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = image.copy()
+            # Save image to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                temp_path = temp_file.name
+                
+                # Convert BGR to RGB if needed
+                if len(image.shape) == 3 and image.shape[2] == 3:
+                    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                else:
+                    image_rgb = image
+                
+                # Save the image
+                cv2.imwrite(temp_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
             
-            # Debug: Save the original image being processed
+            # Use ocrmac with Live Text - this returns a list directly
+            annotations = ocrmac.livetext_from_image(temp_path)
+            
+            # Clean up temporary file
+            os.unlink(temp_path)
+            
+            # Extract text from annotations
+            # Annotations format: [(text, confidence, [x, y, width, height]), ...]
+            text_parts = []
+            for annotation in annotations:
+                if len(annotation) >= 1:
+                    text = annotation[0].strip()
+                    if text:
+                        text_parts.append(text)
+            
+            # Join all text parts with spaces
+            extracted_text = ' '.join(text_parts).strip()
+            
             if self.debug:
-                debug_filename = f"debug_captures/tesseract_original_{self.debug_counter:04d}.png"
-                cv2.imwrite(debug_filename, gray)
-                print(f"DEBUG: Saved original OCR input to {debug_filename}")
+                print(f"Live Text extracted {len(annotations)} annotations")
+                print(f"Extracted text: '{extracted_text[:100]}{'...' if len(extracted_text) > 100 else ''}'")
             
-            # Use Tesseract with simple configuration
-            text = pytesseract.image_to_string(gray, config='--psm 6')
-            text = text.strip()
-            
-            # Clean up the text
-            if text:
-                text = ' '.join(text.split())  # Normalize whitespace
-                print(f"Tesseract result: '{text}'")
-            else:
-                print("No text detected")
-            
-            return text
+            return extracted_text
             
         except Exception as e:
-            print(f"OCR extraction failed: {e}")
+            if self.debug:
+                print(f"Error during Live Text OCR: {e}")
             return ""
-    
-
     
     def calculate_text_similarity(self, text1: str, text2: str) -> float:
         """
@@ -389,12 +282,10 @@ class ScreenRegionMonitor:
             return 1.0
         if not text1 or not text2:
             return 0.0
-            
-        # Normalize texts for comparison
-        text1_norm = ' '.join(text1.lower().split())
-        text2_norm = ' '.join(text2.lower().split())
         
-        return SequenceMatcher(None, text1_norm, text2_norm).ratio()
+        # Use SequenceMatcher for similarity calculation
+        matcher = SequenceMatcher(None, text1.lower(), text2.lower())
+        return matcher.ratio()
     
     def on_text_detected(self, text: str):
         """
@@ -404,67 +295,74 @@ class ScreenRegionMonitor:
         Args:
             text: The detected text
         """
-        if text and len(text.strip()) > 0:
-            # Check if this text is significantly different from the last one
-            similarity = self.calculate_text_similarity(text, self.last_detected_text)
+        if not text or not text.strip():
+            return
+        
+        # Check similarity with last detected text
+        similarity = self.calculate_text_similarity(text, self.last_detected_text)
+        
+        if similarity < self.text_similarity_threshold:
+            print(f"\n{'='*50}")
+            print("NEW TEXT DETECTED:")
+            print(f"{'='*50}")
+            print(text)
+            print(f"{'='*50}")
             
-            if similarity < self.text_similarity_threshold:
-                print(f"\n{'='*50}")
-                print("NEW TEXT DETECTED:")
-                print(f"{'='*50}")
-                print(text)
-                print(f"{'='*50}")
-                if self.last_detected_text:
-                    print(f"Similarity to previous: {similarity:.2%}")
-                print()
-                
-                # Update state
-                self.last_detected_text = text
-                self.waiting_for_change = True
-                
-                # TODO: Add TTS integration here
-                # tts_engine.speak(text)
-            else:
-                print(f"Similar text detected (similarity: {similarity:.2%}) - skipping output")
+            # Update last detected text
+            self.last_detected_text = text
+            
+            # TODO: Uncomment the line below when ready to add TTS
+            # tts_engine.speak(text)
         else:
-            print("No meaningful text detected in the region.")
+            if self.debug:
+                print(f"Text similarity too high ({similarity:.2f}), skipping output")
     
-    def monitor_region(self):
+    def monitor_window(self):
         """
-        Monitor the selected region for changes and extract text when stable.
+        Monitor the selected window for changes and extract text when stable.
         Implements smart state management to avoid repeated OCR of the same text.
         """
-        print(f"Starting monitoring with {self.check_interval}s interval...")
-        print("Press Ctrl+C to stop monitoring.")
-        print(f"Text similarity threshold: {self.text_similarity_threshold:.0%}")
-        print()
+        print("Starting window monitoring...")
+        print("Press Ctrl+C to stop monitoring")
         
         while self.monitoring:
             try:
-                # Capture current image
-                current_image = self.capture_region()
+                # Capture current window
+                current_image = self.capture_current_window()
                 
+                if self.debug and self.debug_counter % 10 == 0:  # Save every 10th frame in debug mode
+                    debug_path = f"debug_captures/frame_{self.debug_counter:04d}.png"
+                    cv2.imwrite(debug_path, current_image)
+                    print(f"Debug: Saved frame to {debug_path}")
+                
+                self.debug_counter += 1
+                
+                # Compare with previous image
                 if self.previous_image is not None:
-                    # Check if there's a change in the image
-                    has_change = self.images_are_different(current_image, self.previous_image)
-                    
-                    if self.waiting_for_change:
-                        # We detected text before and are waiting for a change
-                        if has_change:
-                            print("Change detected after text detection - checking new content...")
-                            # Extract text to see if it's actually different
-                            text = self.extract_text_with_ocr(current_image)
-                            self.on_text_detected(text)
-                            # Reset waiting state - on_text_detected will set it again if needed
-                            self.waiting_for_change = False
+                    if self.images_are_different(current_image, self.previous_image):
+                        if self.waiting_for_change:
+                            # We were waiting for change and got it - run OCR to see if text changed
+                            text = self.extract_text_with_live_text(current_image)
+                            if text:
+                                self.on_text_detected(text)
+                                # Now wait for the next change
+                                self.waiting_for_change = True
+                            else:
+                                # No text found, keep waiting for changes
+                                self.waiting_for_change = False
                         else:
-                            print("Waiting for change (text already detected)...")
+                            print("Change detected - waiting for stability...")
+                            # Reset waiting state since we're seeing changes
+                            self.waiting_for_change = False
                     else:
-                        # Normal monitoring mode
-                        if not has_change:
-                            print("No change detected - extracting text...")
-                            text = self.extract_text_with_ocr(current_image)
-                            self.on_text_detected(text)
+                        # No change detected
+                        if not self.waiting_for_change:
+                            # Content has stabilized - run OCR
+                            text = self.extract_text_with_live_text(current_image)
+                            if text:
+                                self.on_text_detected(text)
+                                # Set flag to wait for next change
+                                self.waiting_for_change = True
                         else:
                             print("Change detected - waiting for stability...")
                             # Reset waiting state since we're seeing changes
@@ -491,12 +389,13 @@ class ScreenRegionMonitor:
             print("Already monitoring!")
             return
             
-        if not self.selected_region:
-            print("No region selected!")
+        # Check if we have a window selected
+        if not self.window_capture or not self.window_capture.target_window:
+            print("No window selected!")
             return
             
         self.monitoring = True
-        self.monitor_thread = threading.Thread(target=self.monitor_region, daemon=True)
+        self.monitor_thread = threading.Thread(target=self.monitor_window, daemon=True)
         self.monitor_thread.start()
     
     def stop_monitoring(self):
@@ -507,18 +406,12 @@ class ScreenRegionMonitor:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TTS Visual Novel Narrator Tool")
+    parser = argparse.ArgumentParser(description="TTS Visual Novel Narrator Tool - macOS Only")
     parser.add_argument(
         "--interval", 
         type=float, 
         default=1.0,
         help="Check interval in seconds (default: 1.0)"
-    )
-    parser.add_argument(
-        "--capture-method",
-        choices=["mss", "pil", "auto"],
-        default="auto",
-        help="Screen capture method: mss, pil, or auto (default: auto)"
     )
     parser.add_argument(
         "--debug",
@@ -529,20 +422,31 @@ def main():
     args = parser.parse_args()
     
     # Create monitor instance
-    monitor = ScreenRegionMonitor(
+    monitor = WindowMonitor(
         check_interval=args.interval, 
-        debug=args.debug,
-        capture_method=args.capture_method
+        debug=args.debug
     )
     
-    # Select region
-    region = monitor.select_region()
-    if not region:
-        print("No region selected. Exiting.")
+    # Select window
+    if not monitor.select_window():
+        print("No window selected. Exiting.")
         return
     
-    monitor.selected_region = region
-    print(f"Selected region: {region}")
+    print("Window selected successfully.")
+    
+    # Optionally select a region within the window
+    print("\nDo you want to select a specific region within the window?")
+    choice = input("Press 'y' for region selection, or any other key to use the full window: ").strip().lower()
+    
+    if choice == 'y':
+        window_region = monitor.select_window_region()
+        if window_region:
+            monitor.window_capture.set_region(window_region)
+            print(f"Selected window region: {window_region}")
+        else:
+            print("Using full window (no region selected).")
+    else:
+        print("Using full window.")
     
     try:
         # Start monitoring
