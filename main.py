@@ -202,8 +202,7 @@ class WindowMonitor:
                     
                     if actual_width > 10 and actual_height > 10:  # Minimum size check
                         selection_result['region'] = (actual_x1, actual_y1, actual_width, actual_height)
-                        # Keep window open - don't destroy it
-                        root.quit()  # Exit mainloop but keep window open
+                        root.destroy()
                     else:
                         messagebox.showwarning("Selection Too Small", "Please select a larger region (minimum 10x10 pixels).")
                 else:
@@ -211,13 +210,11 @@ class WindowMonitor:
         
             def cancel_selection():
                 selection_result['cancelled'] = True
-                # Keep window open - don't destroy it
-                root.quit()  # Exit mainloop but keep window open
+                root.destroy()
         
             def use_full_window():
                 selection_result['region'] = None  # None means full window
-                # Keep window open - don't destroy it
-                root.quit()  # Exit mainloop but keep window open
+                root.destroy()
             
             # Buttons with better visibility and styling
             confirm_btn = tk.Button(button_frame, text="Confirm Selection", command=confirm_selection, 
@@ -244,8 +241,7 @@ class WindowMonitor:
             # Handle window close
             def on_closing():
                 selection_result['cancelled'] = True
-                # Keep window open - don't destroy it
-                root.quit()  # Exit mainloop but keep window open
+                root.destroy()
         
             root.protocol("WM_DELETE_WINDOW", on_closing)
         
@@ -260,9 +256,13 @@ class WindowMonitor:
             except tk.TclError:
                 # Window was already destroyed
                 pass
-    
-            # Don't destroy the window - keep it open for audio functionality
-            # The window will remain open and accessible
+        
+            # Ensure window is destroyed
+            try:
+                root.destroy()
+            except tk.TclError:
+                # Window was already destroyed
+                pass
             
             if selection_result['cancelled']:
                 return None
