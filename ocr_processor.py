@@ -3,27 +3,29 @@ OCR processing module for the TTS Visual Novel Narrator Tool.
 Handles text extraction with smart caching and optimization.
 """
 
-import cv2
 import numpy as np
 import tempfile
 import os
 from typing import Optional
 from difflib import SequenceMatcher
+from PIL import Image, ImageEnhance
 from ocrmac import ocrmac
 from logger import setup_logger, log_ocr_status, log_similarity_check
 
 
 class OCRProcessor:
-    def __init__(self, debug: bool = False, similarity_threshold: float = 0.8):
+    def __init__(self, debug: bool = False, similarity_threshold: float = 0.8, postprocess_images: bool = False):
         """
         Initialize the OCR processor.
         
         Args:
             debug: Enable debug mode with detailed logging
             similarity_threshold: Threshold for text similarity comparison
+            postprocess_images: Enable image postprocessing for better OCR accuracy
         """
         self.debug = debug
         self.similarity_threshold = similarity_threshold
+        self.postprocess_images = postprocess_images
         self.last_detected_text = ""
         self.logger = setup_logger('ocr', 'DEBUG' if debug else 'INFO')
         
@@ -31,6 +33,48 @@ class OCRProcessor:
         
         if debug:
             log_ocr_status("Debug mode enabled", "info")
+        
+        if postprocess_images:
+            log_ocr_status("Image postprocessing enabled (desaturation + high contrast)", "info")
+    
+    def _postprocess_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Postprocess image to improve OCR accuracy by removing saturation and increasing contrast.
+        
+        Args:
+            image: Input image as numpy array
+            
+        Returns:
+            Postprocessed image as numpy array
+        """
+        try:
+            # Convert numpy array to PIL Image
+            if len(image.shape) == 3:
+                # RGB image
+                pil_image = Image.fromarray(image.astype('uint8'))
+            else:
+                # Grayscale image
+                pil_image = Image.fromarray(image.astype('uint8'), mode='L')
+            
+            # Remove saturation (convert to grayscale while preserving luminance)
+            if pil_image.mode != 'L':
+                pil_image = pil_image.convert('L')
+            
+            # Significantly increase contrast
+            enhancer = ImageEnhance.Contrast(pil_image)
+            pil_image = enhancer.enhance(2.5)  # Increase contrast by 2.5x
+            
+            # Convert back to numpy array
+            processed_array = np.array(pil_image)
+            
+            if self.debug:
+                self.logger.debug("Applied image postprocessing: desaturation + high contrast")
+            
+            return processed_array
+            
+        except Exception as e:
+            self.logger.warning(f"Image postprocessing failed: {e}, using original image")
+            return image
     
     def extract_text_with_macos_ocr(self, image: np.ndarray) -> str:
         """
@@ -47,19 +91,23 @@ class OCRProcessor:
             return ""
         
         try:
+            # Apply postprocessing if enabled
+            processed_image = self._postprocess_image(image) if self.postprocess_images else image
+            
             # Save image to temporary file for OCR processing
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
                 temp_path = temp_file.name
                 
-                # Convert image format if needed
-                if len(image.shape) == 3:
-                    # Convert RGB to BGR for OpenCV
-                    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                # Convert numpy array to PIL Image and save
+                if len(processed_image.shape) == 3:
+                    # RGB image
+                    pil_image = Image.fromarray(processed_image.astype('uint8'))
                 else:
-                    image_bgr = image
+                    # Grayscale image
+                    pil_image = Image.fromarray(processed_image.astype('uint8'), mode='L')
                 
                 # Save image
-                cv2.imwrite(temp_path, image_bgr)
+                pil_image.save(temp_path, 'PNG')
                 
                 if self.debug:
                     self.logger.debug(f"Image saved to {temp_path}")

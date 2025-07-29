@@ -27,13 +27,14 @@ from logger import setup_logger, log_detected_text, log_monitor_status, log_imag
 
 
 class WindowMonitor:
-    def __init__(self, check_interval: float = 1.0, debug: bool = False):
+    def __init__(self, check_interval: float = 1.0, debug: bool = False, postprocess_ocr: bool = False):
         """
         Initialize the macOS window monitor.
         
         Args:
             check_interval: Time in seconds between snapshots (default: 1.0)
             debug: Enable debug mode with image saving and detailed output
+            postprocess_ocr: Enable OCR image postprocessing for better accuracy
         """
         self.check_interval = check_interval
         self.monitoring = False
@@ -50,7 +51,7 @@ class WindowMonitor:
         self.last_image_hash = None
         
         # OCR processor
-        self.ocr_processor = OCRProcessor(debug=debug, similarity_threshold=0.8)
+        self.ocr_processor = OCRProcessor(debug=debug, similarity_threshold=0.8, postprocess_images=postprocess_ocr)
         
         # TTS integration
         self.tts_enabled = True
@@ -476,13 +477,19 @@ def main():
         action="store_true",
         help="Enable debug mode with image saving and detailed output"
     )
+    parser.add_argument(
+        "--postprocess-ocr",
+        action="store_true",
+        help="Enable OCR image postprocessing (desaturation + high contrast) for better accuracy"
+    )
     
     args = parser.parse_args()
     
     # Create monitor instance
     monitor = WindowMonitor(
         check_interval=args.interval, 
-        debug=args.debug
+        debug=args.debug,
+        postprocess_ocr=args.postprocess_ocr
     )
     
     # Select window
