@@ -202,27 +202,35 @@ class WindowMonitor:
                     
                     if actual_width > 10 and actual_height > 10:  # Minimum size check
                         selection_result['region'] = (actual_x1, actual_y1, actual_width, actual_height)
-                        root.quit()
+                        root.destroy()
                     else:
                         messagebox.showwarning("Selection Too Small", "Please select a larger region (minimum 10x10 pixels).")
                 else:
                     messagebox.showwarning("No Selection", "Please make a selection first.")
-            
+        
             def cancel_selection():
                 selection_result['cancelled'] = True
-                root.quit()
-            
+                root.destroy()
+        
             def use_full_window():
                 selection_result['region'] = None  # None means full window
-                root.quit()
+                root.destroy()
             
-            # Buttons
-            tk.Button(button_frame, text="Confirm Selection", command=confirm_selection, 
-                     bg='green', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
-            tk.Button(button_frame, text="Use Full Window", command=use_full_window, 
-                     bg='blue', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
-            tk.Button(button_frame, text="Cancel", command=cancel_selection, 
-                     bg='red', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
+            # Buttons with better visibility and styling
+            confirm_btn = tk.Button(button_frame, text="Confirm Selection", command=confirm_selection, 
+                                   bg='#4CAF50', fg='black', font=('Arial', 10, 'bold'), 
+                                   padx=15, pady=5, relief='raised', bd=2)
+            confirm_btn.pack(side=tk.LEFT, padx=5)
+        
+            full_window_btn = tk.Button(button_frame, text="Use Full Window", command=use_full_window, 
+                                       bg='#2196F3', fg='black', font=('Arial', 10, 'bold'), 
+                                       padx=15, pady=5, relief='raised', bd=2)
+            full_window_btn.pack(side=tk.LEFT, padx=5)
+        
+            cancel_btn = tk.Button(button_frame, text="Cancel", command=cancel_selection, 
+                                  bg='#f44336', fg='black', font=('Arial', 10, 'bold'), 
+                                  padx=15, pady=5, relief='raised', bd=2)
+            cancel_btn.pack(side=tk.LEFT, padx=5)
             
             # Center the window
             root.update_idletasks()
@@ -233,13 +241,28 @@ class WindowMonitor:
             # Handle window close
             def on_closing():
                 selection_result['cancelled'] = True
-                root.quit()
-            
+                root.destroy()
+        
             root.protocol("WM_DELETE_WINDOW", on_closing)
-            
+        
+            # Make window more prominent
+            root.lift()
+            root.attributes('-topmost', True)
+            root.focus_force()
+        
             # Run the GUI
-            root.mainloop()
-            root.destroy()
+            try:
+                root.mainloop()
+            except tk.TclError:
+                # Window was already destroyed
+                pass
+        
+            # Ensure window is destroyed
+            try:
+                root.destroy()
+            except tk.TclError:
+                # Window was already destroyed
+                pass
             
             if selection_result['cancelled']:
                 return None
@@ -286,7 +309,7 @@ class WindowMonitor:
             diff = np.dot(diff[...,:3], [0.299, 0.587, 0.114])
         
         # Calculate the percentage of different pixels (threshold for "different" pixel)
-        pixel_threshold = 30  # Pixels with difference > 30 are considered different
+        pixel_threshold = 100  # Pixels with difference > 100 are considered different
         different_pixels = np.sum(diff > pixel_threshold)
         total_pixels = diff.shape[0] * diff.shape[1]
         difference_ratio = different_pixels / total_pixels
