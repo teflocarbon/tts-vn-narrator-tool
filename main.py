@@ -216,13 +216,21 @@ class WindowMonitor:
                 selection_result['region'] = None  # None means full window
                 root.quit()
             
-            # Buttons
-            tk.Button(button_frame, text="Confirm Selection", command=confirm_selection, 
-                     bg='green', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
-            tk.Button(button_frame, text="Use Full Window", command=use_full_window, 
-                     bg='blue', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
-            tk.Button(button_frame, text="Cancel", command=cancel_selection, 
-                     bg='red', fg='white', padx=10).pack(side=tk.LEFT, padx=5)
+            # Buttons with better visibility and styling
+            confirm_btn = tk.Button(button_frame, text="Confirm Selection", command=confirm_selection, 
+                                   bg='#4CAF50', fg='black', font=('Arial', 10, 'bold'), 
+                                   padx=15, pady=5, relief='raised', bd=2)
+            confirm_btn.pack(side=tk.LEFT, padx=5)
+        
+            full_window_btn = tk.Button(button_frame, text="Use Full Window", command=use_full_window, 
+                                       bg='#2196F3', fg='black', font=('Arial', 10, 'bold'), 
+                                       padx=15, pady=5, relief='raised', bd=2)
+            full_window_btn.pack(side=tk.LEFT, padx=5)
+        
+            cancel_btn = tk.Button(button_frame, text="Cancel", command=cancel_selection, 
+                                  bg='#f44336', fg='black', font=('Arial', 10, 'bold'), 
+                                  padx=15, pady=5, relief='raised', bd=2)
+            cancel_btn.pack(side=tk.LEFT, padx=5)
             
             # Center the window
             root.update_idletasks()
